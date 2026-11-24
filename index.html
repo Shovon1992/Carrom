@@ -1757,7 +1757,7 @@
 					render();
 				});
 				var WERR =
-					"Could not write player.csv. Close it if it is open in Excel. If you opened this page through a plain web server, start it with server.py instead.";
+					"Could not write player.csv. Close it if it is open in Excel, or press Change folder and pick the folder again.";
 				function setSync(t, c) {
 					$("sync").textContent = t;
 					$("sync").className = "status " + (c || "");
@@ -1835,7 +1835,35 @@
 								if (e && e.name === "NotFoundError") return null;
 								throw e;
 							},
-						);
+						)
+						.then(function (t) {
+							/* not in the chosen folder: use the copy published with the site */
+							return t === null && name === "employee.csv" ? webText(name) : t;
+						});
+				}
+				function webText(name) {
+					return fetch(name, { cache: "no-store" }).then(
+						function (r) {
+							return r.ok ? r.text() : null;
+						},
+						function () {
+							return null;
+						},
+					);
+				}
+				/* only server.py (localhost) accepts PUT; GitHub Pages and other static hosts do not */
+				var HOSTED = !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+				function webEmp() {
+					return webText("employee.csv").then(function (t) {
+						if (t === null) return;
+						var pe = parseEmp(t);
+						db = pe.m;
+						$("data").value = t;
+						ls("vb_data", t);
+						$("dmsg").textContent = pe.n + " employees loaded from employee.csv.";
+						$("dmsg").className = "status ok";
+						lookup();
+					});
 				}
 				function doWrite() {
 					var text = "\uFEFF" + csv(entries) + "\n",
@@ -1941,16 +1969,17 @@
 					loadCache();
 					render();
 					ui();
+					webEmp();
 					if (!window.showDirectoryPicker) {
 						setSync(
-							"Could not read employee.csv. This browser cannot open folders, so start server.py in this folder and open the page from it. Entries are kept in this browser only.",
+							"This browser cannot save to a folder. Open the page in Chrome or Edge on a computer. Entries are kept in this browser only.",
 							"no",
 						);
 						return Promise.resolve();
 					}
 					var none = function () {
 						setSync(
-							"Not connected. Choose the folder that holds employee.csv. Until then entries are kept in this browser only.",
+							"Not connected. Press Choose folder and pick the folder where player.csv should be saved. Until then entries are kept in this browser only.",
 							"no",
 						);
 					};
@@ -1969,7 +1998,7 @@
 								pendingH = h;
 								ui();
 								setSync(
-									"Press Reconnect folder to allow access to employee.csv and player.csv again. Until then entries are kept in this browser only.",
+									"Press Reconnect folder to allow saving to player.csv again. Until then entries are kept in this browser only.",
 									"no",
 								);
 							});
@@ -2020,7 +2049,7 @@
 							},
 						)
 						.then(function (ok) {
-							if (ok) {
+							if (ok && !HOSTED) {
 								mode = "http";
 								pendingH = null;
 								ui();
