@@ -1994,7 +1994,14 @@
 								ghSha = j ? j.sha : null;
 								return ghPut(text, true);
 							});
-						if (!r.ok) throw new Error("GitHub " + r.status);
+						if (!r.ok)
+							return r.text().then(function (t) {
+								var m = "";
+								try {
+									m = JSON.parse(t).message || "";
+								} catch (e) {}
+								throw new Error("GitHub " + r.status + (m ? ": " + m : ""));
+							});
 						return r.json().then(function (j) {
 							ghSha = j.content.sha;
 						});
