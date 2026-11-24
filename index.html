@@ -918,6 +918,19 @@
 					<button type="button" class="small" id="reconnect" hidden>Reconnect folder</button
 					><button type="button" class="alt small" id="connect">Choose folder</button>
 				</div>
+				<details id="ghbox" hidden>
+					<summary>Save to GitHub repo (set up once)</summary>
+					<div style="display: grid; gap: 8px; margin: 8px 0">
+						<input type="text" id="ghrepo" placeholder="Repo: owner/name" autocomplete="off" />
+						<input type="text" id="ghbranch" placeholder="Branch (default: main)" autocomplete="off" />
+						<input type="text" id="ghdir" placeholder="Folder in repo (leave empty for root, or e.g. docs)" autocomplete="off" />
+						<input type="password" id="ghtoken" placeholder="Personal access token (stored in this browser only)" autocomplete="off" style="width: 100%; padding: 10px" />
+						<div class="actions">
+							<button type="button" class="small" id="ghsave">Save and connect</button>
+							<button type="button" class="alt small" id="ghoff">Disconnect</button>
+						</div>
+					</div>
+				</details>
 				<div class="filters" role="search" aria-label="Filter attendees">
 					<input
 						type="text"
@@ -1533,9 +1546,13 @@
 							showModal(entry);
 							notify(entry);
 						})
-						.catch(function () {
+						.catch(function (err) {
 							m.textContent =
-								"Could not save to player.csv. Close it if it is open in Excel, then try again.";
+								mode === "gh"
+									? "Could not save to GitHub (" +
+										((err && err.message) || "error") +
+										"). Check the token, repo and branch, then try again."
+									: "Could not save to player.csv. Close it if it is open in Excel, then try again.";
 							m.className = "status no";
 						})
 						.then(function () {
@@ -1624,6 +1641,42 @@
 				$("reload").addEventListener("click", function () {
 					if (mode === "none") init();
 					else loadAll();
+				});
+				$("ghsave").addEventListener("click", function () {
+					var repo = $("ghrepo")
+							.value.trim()
+							.replace(/^https?:\/\/github\.com\//, "")
+							.replace(/\.git$/, "")
+							.replace(/\/+$/, ""),
+						tok = $("ghtoken").value.trim() || (gh && gh.token) || "";
+					if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !tok) {
+						setSync("Enter the repo as owner/name and paste a token.", "no");
+						return;
+					}
+					ls(
+						"vb_gh",
+						JSON.stringify({
+							repo: repo,
+							branch: $("ghbranch").value.trim() || "main",
+							dir: $("ghdir").value.trim(),
+							token: tok,
+						}),
+					);
+					$("ghtoken").value = "";
+					mode = "none";
+					init();
+				});
+				$("ghoff").addEventListener("click", function () {
+					try {
+						localStorage.removeItem("vb_gh");
+					} catch (e) {}
+					gh = null;
+					ghSha = null;
+					["ghrepo", "ghbranch", "ghdir", "ghtoken"].forEach(function (i) {
+						$(i).value = "";
+					});
+					mode = "none";
+					init();
 				});
 				$("connect").addEventListener("click", pickDir);
 				$("reconnect").addEventListener("click", reconnect);
@@ -1763,7 +1816,8 @@
 					$("sync").className = "status " + (c || "");
 				}
 				function ui() {
-					$("connrow").hidden = mode === "http" || !window.showDirectoryPicker;
+					$("connrow").hidden = mode === "http" || mode === "gh" || !window.showDirectoryPicker;
+					$("ghbox").hidden = !HOSTED;
 					$("connect").textContent = mode === "dir" ? "Change folder" : "Choose folder";
 					$("reconnect").hidden = !pendingH || mode === "dir";
 				}
@@ -1816,6 +1870,12 @@
 				}
 				/* mode "http": page opened through server.py (fetch + PUT). mode "dir": folder chosen in the browser. mode "none": not connected, browser-only copy. */
 				function readText(name) {
+					if (mode === "gh")
+						return ghGet(name).then(function (j) {
+							if (name === "player.csv") ghSha = j ? j.sha : null;
+							if (!j) return name === "employee.csv" ? webText(name) : null;
+							return b64dec(j.content || "");
+						});
 					if (mode === "http")
 						return fetch(name, { cache: "no-store" }).then(function (r) {
 							if (r.status === 404) return null;
@@ -1851,6 +1911,83 @@
 						},
 					);
 				}
+				/* mode "gh": player.csv is read and committed straight to the GitHub repo through the GitHub API */
+				var gh = null,
+					ghSha = null;
+				function ghLoadCfg() {
+					try {
+						var c = JSON.parse(ls("vb_gh") || "null");
+						gh = c && c.repo && c.token ? c : null;
+					} catch (e) {
+						gh = null;
+					}
+					if (gh) {
+						$("ghrepo").value = gh.repo;
+						$("ghbranch").value = gh.branch || "";
+						$("ghdir").value = gh.dir || "";
+					}
+				}
+				function ghUrl(name) {
+					var d = (gh.dir || "").replace(/^\/+|\/+$/g, ""),
+						path = (d ? d + "/" : "") + name;
+					return (
+						"https://api.github.com/repos/" +
+						gh.repo +
+						"/contents/" +
+						path.split("/").map(encodeURIComponent).join("/")
+					);
+				}
+				function ghHead() {
+					return { Authorization: "Bearer " + gh.token, Accept: "application/vnd.github+json" };
+				}
+				function b64dec(b) {
+					var bin = atob(b.replace(/\s/g, "")),
+						u = new Uint8Array(bin.length);
+					for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+					return new TextDecoder("utf-8").decode(u);
+				}
+				function b64enc(t) {
+					var u = new TextEncoder().encode(t),
+						out = "";
+					for (var i = 0; i < u.length; i += 8192)
+						out += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
+					return btoa(out);
+				}
+				function ghGet(name) {
+					return fetch(
+						ghUrl(name) + "?ref=" + encodeURIComponent(gh.branch || "main") + "&t=" + Date.now(),
+						{ headers: ghHead(), cache: "no-store" },
+					).then(function (r) {
+						if (r.status === 404) return null;
+						if (!r.ok) throw new Error("GitHub " + r.status);
+						return r.json();
+					});
+				}
+				function ghPut(text, retried) {
+					var body = {
+						message: "Update player.csv (" + new Date().toISOString() + ")",
+						content: b64enc(text),
+						branch: gh.branch || "main",
+					};
+					if (ghSha) body.sha = ghSha;
+					var h = ghHead();
+					h["Content-Type"] = "application/json";
+					return fetch(ghUrl("player.csv"), {
+						method: "PUT",
+						headers: h,
+						body: JSON.stringify(body),
+					}).then(function (r) {
+						if ((r.status === 409 || r.status === 422) && !retried)
+							return ghGet("player.csv").then(function (j) {
+								ghSha = j ? j.sha : null;
+								return ghPut(text, true);
+							});
+						if (!r.ok) throw new Error("GitHub " + r.status);
+						return r.json().then(function (j) {
+							ghSha = j.content.sha;
+						});
+					});
+				}
 				/* only server.py (localhost) accepts PUT; GitHub Pages and other static hosts do not */
 				var HOSTED = !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 				function webEmp() {
@@ -1870,6 +2007,7 @@
 						ok = function () {
 							setSync("Thanks.", "ok");
 						};
+					if (mode === "gh") return ghPut(text).then(ok);
 					if (mode === "http")
 						return fetch("player.csv", {
 							method: "PUT",
@@ -1960,7 +2098,9 @@
 						})
 						.catch(function () {
 							setSync(
-								"Could not read employee.csv or player.csv. Check the folder and press Reload.",
+								mode === "gh"
+									? "Could not read from GitHub. Check the token, repo and branch in the GitHub settings below."
+									: "Could not read employee.csv or player.csv. Check the folder and press Reload.",
 								"no",
 							);
 						});
@@ -2039,6 +2179,15 @@
 				}
 				function init() {
 					setSync("Looking for employee.csv...");
+					ghLoadCfg();
+					if (HOSTED && gh) {
+						mode = "gh";
+						pendingH = null;
+						loadCache();
+						render();
+						ui();
+						return loadAll();
+					}
 					fetch("employee.csv", { cache: "no-store" })
 						.then(
 							function (r) {
