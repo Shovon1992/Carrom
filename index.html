@@ -1874,6 +1874,7 @@
 						return ghGet(name).then(function (j) {
 							if (name === "player.csv") ghSha = j ? j.sha : null;
 							if (!j) return name === "employee.csv" ? webText(name) : null;
+							if (!j.content && j.size > 0) return ghRaw(name); /* files over 1 MB come back without content */
 							return b64dec(j.content || "");
 						});
 					if (mode === "http")
@@ -1961,6 +1962,17 @@
 						if (r.status === 404) return null;
 						if (!r.ok) throw new Error("GitHub " + r.status);
 						return r.json();
+					});
+				}
+				function ghRaw(name) {
+					var h = ghHead();
+					h.Accept = "application/vnd.github.raw+json";
+					return fetch(
+						ghUrl(name) + "?ref=" + encodeURIComponent(gh.branch || "main") + "&t=" + Date.now(),
+						{ headers: h, cache: "no-store" },
+					).then(function (r) {
+						if (!r.ok) throw new Error("GitHub " + r.status);
+						return r.text();
 					});
 				}
 				function ghPut(text, retried) {
@@ -2060,8 +2072,11 @@
 								db = pe.m;
 								$("data").value = et;
 								ls("vb_data", et);
-								$("dmsg").textContent = pe.n + " employees loaded from employee.csv.";
-								$("dmsg").className = "status ok";
+								$("dmsg").textContent =
+									pe.n +
+									" employees loaded from employee.csv." +
+									(pe.n ? "" : " (file read: " + et.length + " characters, " + et.split(/\r?\n/).length + " lines. Each line must start with a numeric Man No, then Name, Designation, Area.)");
+								$("dmsg").className = "status " + (pe.n ? "ok" : "no");
 							} else {
 								db = {};
 								$("data").value = "";
